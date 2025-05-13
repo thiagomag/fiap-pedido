@@ -1,42 +1,142 @@
-version: '3.8'
-
 services:
-  db:
+  postgres:
     image: postgres:15-alpine
-    container_name: postgres-db
+    container_name: fiap-postgres
+    restart: always
     environment:
-      POSTGRES_DB: restaurant_reservation_api
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
     ports:
       - "5432:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - pgdata:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
     networks:
-      - app-network
+      - fiap-network
 
-  app:
-    image: thiagomag/fiap-pagamento-service:latest
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: fiap-pagamento-service
+  kafka:
+    image: bitnami/kafka:latest
+    container_name: kafka
     ports:
-      - "8083:8083"
+      - "9092:9092"
     environment:
-      DB_HOST: db
+      - KAFKA_CFG_NODE_ID=0
+      - KAFKA_CFG_PROCESS_ROLES=broker,controller
+      - KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=0@kafka:9093
+      - KAFKA_CFG_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093
+      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092
+      - KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER
+      - KAFKA_CFG_INTER_BROKER_LISTENER_NAME=PLAINTEXT
+    volumes:
+      - kafka-data:/bitnami/kafka
+    networks:
+      - fiap-network
+
+  fiap-cliente-service:
+    image: thiagomag/fiap-cliente-service:latest
+    container_name: fiap-cliente-service
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: fiap-cliente-service
+      DATABASE_USERNAME: postgres
+      DATABASE_PASSWORD: postgres
+    ports:
+      - "8081:8081"
+    depends_on:
+      - postgres
+    networks:
+      - fiap-network
+
+  fiap-estoque-service:
+    image: thiagomag/fiap-estoque-service:latest
+    container_name: fiap-estoque-service
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: fiapestoque
+      DB_URL_PARAM: ?ssl=false
+      DATABASE_USERNAME: postgres
+      DATABASE_PASSWORD: postgres
+    ports:
+      - "8082:8082"
+    depends_on:
+      - postgres
+    networks:
+      - fiap-network
+
+  fiap-pagamento-service:
+    image: thiagomag/fiap-pagamento-service:latest
+    container_name: fiap-pagamento-service
+    environment:
+      DB_HOST: postgres
       DB_PORT: 5432
       DB_NAME: pagamento-service
       DB_URL_PARAM: ?ssl=false
       DATABASE_USERNAME: postgres
       DATABASE_PASSWORD: postgres
+      CLIENTE_SERVICE_URL: http://fiap-cliente-service:8081
+    ports:
+      - "8083:8083"
     depends_on:
-      - db
+      - postgres
     networks:
-      - app-network
+      - fiap-network
+
+  fiap-produto-service:
+    image: thiagomag/fiap-produto-service:latest
+    container_name: fiap-produto-service
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: fiap-produto-service
+      DATABASE_USERNAME: postgres
+      DATABASE_PASSWORD: postgres
+      ESTOQUE_SERVICE_URL: http://fiap-estoque-service:8082
+    ports:
+      - "8080:8080"
+    depends_on:
+      - postgres
+    networks:
+      - fiap-network
+
+  fiap-pedido-service:
+    image: thiagomag/fiap-pedido-service:latest
+    container_name: fiap-pedido-service
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: fiap-pedido-service
+      DATABASE_USERNAME: postgres
+      DATABASE_PASSWORD: postgres
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      PRODUTO_SERVICE_URL: http://fiap-produto-service:8080
+      CLIENTE_SERVICE_URL: http://fiap-cliente-service:8081
+      ESTOQUE_SERVICE_URL: http://fiap-estoque-service:8082
+      PAGAMENTO_SERVICE_URL: http://fiap-pagamento-service:8083
+    ports:
+      - "8079:8079"
+    depends_on:
+      - postgres
+      - kafka
+    networks:
+      - fiap-network
+
+  fiap-pedido-api:
+    image: thiagomag/fiap-pedido-api:latest
+    container_name: fiap-pedido-api
+    ports:
+      - "8078:8078"
+    environment:
+      - SPRING_PROFILES_ACTIVE=default
+    depends_on:
+      - kafka
+    networks:
+      - fiap-network
 
 volumes:
-  postgres_data:
+  pgdata:
+  kafka-data:
 
 networks:
-  app-network:
+  fiap-network:
